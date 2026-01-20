@@ -27,7 +27,9 @@ import {
   X,
   ShieldCheck,
   Wifi,
-  WifiOff
+  WifiOff,
+  Loader2,
+  CheckCircle2
 } from 'lucide-react';
 
 /* <!-- Chosen Palette: Professional Indigo & Slate -->
@@ -35,7 +37,7 @@ import {
 1. 資訊架構：以週視圖排程表為核心，左側提供會議室篩選。
 2. 驗證流：啟動時強制執行 signInAnonymously，並監聽 auth 狀態，確保所有資料請求都在 user 物件存在後發起。
 3. 預約邏輯：使用格式化 ID (RoomID_Date_Time) 確保資料唯一性，並遵守系統指定的公共路徑規則。
-4. 狀態反饋：加入連線狀態看板，解決使用者提到的「無法登錄」感知問題。
+4. 狀態反饋：加入連線狀態看板與 Loading 狀態，解決使用者提到的「按儲存後沒反應」的感知問題。
 -->
 <!-- Visualization & Content Choices: 
 - 預約看板 -> 目標：對比佔用狀態 -> 方法：Grid 排版 -> 庫：Tailwind CSS。
@@ -45,7 +47,7 @@ import {
 <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
 */
 
-// --- Firebase 設定 (請確認您的 Firebase Console 已開啟 Anonymous 驗證) ---
+// --- Firebase 設定 ---
 const firebaseConfig = {
   apiKey: "AIzaSyA0nKyCYK6iAVCTpg3qW2Vkqfao8AQspj8",
   authDomain: "meeting-room-system-1a3e9.firebaseapp.com",
@@ -88,9 +90,10 @@ function MeetingApp() {
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [isBookingModalOpen, setIsBookingModalOpen] = useState(false);
   const [activeSlot, setActiveSlot] = useState(null);
-  const [status, setStatus] = useState('connecting'); // connecting, authorized, error
+  const [status, setStatus] = useState('connecting'); 
+  const [isLoading, setIsLoading] = useState(false);
+  const [message, setMessage] = useState(null);
 
-  // 1. 初始化驗證 (RULE 3: Auth Before Queries)
   useEffect(() => {
     const initSession = async () => {
       try {
@@ -108,11 +111,9 @@ function MeetingApp() {
     return () => unsubscribe();
   }, []);
 
-  // 2. 資料獲取 (RULE 1 & 2: Strict Paths & Simple Queries)
   useEffect(() => {
     if (!user) return;
 
-    // 獲取個人資訊
     const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'info');
     getDoc(profileRef).then(snap => {
       if (snap.exists()) {
@@ -122,7 +123,6 @@ function MeetingApp() {
       }
     });
 
-    // 監聽公共預約 (遵守路徑規則)
     const bookingsRef = collection(db, 'artifacts', appId, 'public', 'data', 'bookings');
     const unsubscribe = onSnapshot(bookingsRef, (snapshot) => {
       setBookings(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
@@ -133,6 +133,11 @@ function MeetingApp() {
 
     return () => unsubscribe();
   }, [user]);
+
+  const showToast = (msg, type = 'info') => {
+    setMessage({ text: msg, type });
+    setTimeout(() => setMessage(null), 3000);
+  };
 
   const weekDays = useMemo(() => {
     const start = new Date(baseDate);
@@ -158,18 +163,34 @@ function MeetingApp() {
 
   const handleSaveProfile = async (e) => {
     e.preventDefault();
-    if (!user) return;
+    if (!user) {
+      showToast("系統未就緒，請稍後再試", "error");
+      return;
+    }
+    setIsLoading(true);
     try {
       const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'info');
       await setDoc(profileRef, userProfile);
       setIsProfileModalOpen(false);
+      showToast("個人資料已儲存", "success");
     } catch (err) {
-      alert("儲存失敗，請檢查網路。");
+      console.error(err);
+      showToast("儲存失敗，請檢查網路設定", "error");
+    } finally {
+      setIsLoading(false);
     }
   };
 
   const handleBooking = async () => {
     if (!user || !activeSlot) return;
+    if (!userProfile.name) {
+      setIsBookingModalOpen(false);
+      setIsProfileModalOpen(true);
+      showToast("請先完成個人資料設定", "error");
+      return;
+    }
+
+    setIsLoading(true);
     const bookingId = `${selectedRoom.id}_${activeSlot.date}_${activeSlot.time.replace(':','')}`;
     const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'bookings', bookingId);
     
@@ -185,8 +206,12 @@ function MeetingApp() {
       });
       setIsBookingModalOpen(false);
       setActiveSlot(null);
+      showToast("會議室預約成功", "success");
     } catch (err) {
-      alert("預約失敗，請確認 Firebase Rules 設定。");
+      console.error(err);
+      showToast("預約失敗，請確認 Firebase Rules 設定", "error");
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -194,8 +219,9 @@ function MeetingApp() {
     if (!window.confirm("確定取消預約？")) return;
     try {
       await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'bookings', id));
+      showToast("預約已取消", "info");
     } catch (err) {
-      alert("刪除失敗。");
+      showToast("刪除失敗", "error");
     }
   };
 
@@ -229,7 +255,6 @@ function MeetingApp() {
       </header>
 
       <main className="p-4 md:p-8 grid grid-cols-1 lg:grid-cols-4 gap-8 max-w-7xl mx-auto w-full flex-1">
-        {/* 會議室切換 */}
         <aside className="space-y-3">
           <div className="px-2 mb-4">
             <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest">Select Room / 會議室</h3>
@@ -246,7 +271,6 @@ function MeetingApp() {
           ))}
         </aside>
 
-        {/* 預約表格 */}
         <div className="lg:col-span-3 space-y-4">
           <div className="bg-white p-6 rounded-[2rem] border border-slate-200 shadow-sm flex flex-col md:flex-row justify-between items-center gap-4">
             <div>
@@ -323,10 +347,15 @@ function MeetingApp() {
               <p className="text-xs text-slate-400 mt-2 font-bold uppercase">Profile Verification</p>
             </div>
             <form onSubmit={handleSaveProfile} className="space-y-4">
-              <input required placeholder="姓名" className="w-full border-2 border-slate-100 p-4 rounded-2xl outline-none focus:border-indigo-500 font-bold transition-all" value={userProfile.name} onChange={e => setUserProfile({...userProfile, name: e.target.value})} />
-              <input required placeholder="所屬部門" className="w-full border-2 border-slate-100 p-4 rounded-2xl outline-none focus:border-indigo-500 font-bold transition-all" value={userProfile.department} onChange={e => setUserProfile({...userProfile, department: e.target.value})} />
-              <button className="w-full bg-indigo-600 text-white p-4 rounded-2xl font-black shadow-lg hover:bg-indigo-700 active:scale-95 transition-all flex items-center justify-center gap-2">
-                <ShieldCheck size={20} /> 儲存並開始使用
+              <input required placeholder="姓名" className="w-full border-2 border-slate-100 p-4 rounded-2xl outline-none focus:border-indigo-500 font-bold transition-all disabled:opacity-50" value={userProfile.name} onChange={e => setUserProfile({...userProfile, name: e.target.value})} disabled={isLoading} />
+              <input required placeholder="所屬部門" className="w-full border-2 border-slate-100 p-4 rounded-2xl outline-none focus:border-indigo-500 font-bold transition-all disabled:opacity-50" value={userProfile.department} onChange={e => setUserProfile({...userProfile, department: e.target.value})} disabled={isLoading} />
+              <button 
+                type="submit"
+                disabled={isLoading}
+                className="w-full bg-indigo-600 text-white p-4 rounded-2xl font-black shadow-lg hover:bg-indigo-700 active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isLoading ? <Loader2 className="animate-spin" size={20} /> : <ShieldCheck size={20} />}
+                {isLoading ? "儲存中..." : "儲存並開始使用"}
               </button>
             </form>
           </div>
@@ -348,8 +377,22 @@ function MeetingApp() {
             </div>
             <button 
               onClick={handleBooking} 
-              className="w-full bg-indigo-600 text-white p-4 rounded-2xl font-black shadow-lg hover:bg-indigo-700 transition-all active:scale-95"
-            >確認送出</button>
+              disabled={isLoading}
+              className="w-full bg-indigo-600 text-white p-4 rounded-2xl font-black shadow-lg hover:bg-indigo-700 transition-all active:scale-95 flex items-center justify-center gap-2 disabled:opacity-50"
+            >
+              {isLoading && <Loader2 className="animate-spin" size={20} />}
+              {isLoading ? "處理中..." : "確認送出"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Toast 提示訊息 */}
+      {message && (
+        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[60] animate-bounce">
+          <div className={`px-6 py-3 rounded-full shadow-2xl flex items-center gap-3 font-black text-white ${message.type === 'error' ? 'bg-rose-500' : 'bg-emerald-500'}`}>
+            {message.type === 'success' ? <CheckCircle2 size={18} /> : <AlertCircle size={18} />}
+            {message.text}
           </div>
         </div>
       )}
