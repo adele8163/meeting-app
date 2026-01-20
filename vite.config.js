@@ -5,6 +5,7 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   build: {
+    // 輸出目錄設定為 dist，這是 Vercel 的預設讀取路徑
     outDir: 'dist',
   }
 })

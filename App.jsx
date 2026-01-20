@@ -1,21 +1,11 @@
-{
-  "name": "meeting-room-system",
-  "private": true,
-  "version": "1.0.0",
-  "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
-  },
-  "dependencies": {
-    "react": "18.2.0",
-    "react-dom": "18.2.0",
-    "firebase": "^10.7.1",
-    "lucide-react": "^0.303.0"
-  },
-  "devDependencies": {
-    "@vitejs/plugin-react": "^4.2.1",
-    "vite": "^5.0.8"
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+// 這是確保 Vercel 能正確編譯 JSX 語法的關鍵設定
+export default defineConfig({
+  plugins: [react()],
+  build: {
+    // 輸出目錄設定為 dist，這是 Vercel 的預設讀取路徑
+    outDir: 'dist',
   }
-}
+})
