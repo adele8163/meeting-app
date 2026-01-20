@@ -20,16 +20,17 @@ import {
   Building2, 
   ChevronLeft, 
   ChevronRight, 
-  Trash2,
-  MonitorOff,
-  UserCircle,
-  AlertCircle,
-  X,
-  ShieldCheck,
-  Wifi,
-  WifiOff,
-  Loader2,
-  CheckCircle2
+  Trash2, 
+  MonitorOff, 
+  UserCircle, 
+  AlertCircle, 
+  X, 
+  ShieldCheck, 
+  Wifi, 
+  WifiOff, 
+  Loader2, 
+  CheckCircle2,
+  Settings
 } from 'lucide-react';
 
 /* <!-- Chosen Palette: Professional Indigo & Slate -->
@@ -37,7 +38,7 @@ import {
 1. 資訊架構：以週視圖排程表為核心，左側提供會議室篩選。
 2. 驗證流：啟動時強制執行 signInAnonymously，並監聽 auth 狀態，確保所有資料請求都在 user 物件存在後發起。
 3. 預約邏輯：使用格式化 ID (RoomID_Date_Time) 確保資料唯一性，並遵守系統指定的公共路徑規則。
-4. 狀態反饋：加入連線狀態看板與 Loading 狀態，解決使用者提到的「按儲存後沒反應」的感知問題。
+4. 診斷增強：針對「無法儲存」問題，加入了具體的錯誤訊息回饋，當 Firebase 回傳錯誤時，Toast 會顯示具體原因。
 -->
 <!-- Visualization & Content Choices: 
 - 預約看板 -> 目標：對比佔用狀態 -> 方法：Grid 排版 -> 庫：Tailwind CSS。
@@ -47,7 +48,7 @@ import {
 <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
 */
 
-// --- Firebase 設定 ---
+// --- Firebase 設定 (請務必確認您的 Firebase 控制台已啟用 Anonymous 登入與 Firestore) ---
 const firebaseConfig = {
   apiKey: "AIzaSyA0nKyCYK6iAVCTpg3qW2Vkqfao8AQspj8",
   authDomain: "meeting-room-system-1a3e9.firebaseapp.com",
@@ -94,6 +95,7 @@ function MeetingApp() {
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState(null);
 
+  // 初始化驗證
   useEffect(() => {
     const initSession = async () => {
       try {
@@ -101,6 +103,7 @@ function MeetingApp() {
       } catch (err) {
         console.error("Auth Error:", err);
         setStatus('error');
+        showToast(`驗證失敗: ${err.message}`, "error");
       }
     };
     initSession();
@@ -111,6 +114,7 @@ function MeetingApp() {
     return () => unsubscribe();
   }, []);
 
+  // 資料監聽
   useEffect(() => {
     if (!user) return;
 
@@ -128,7 +132,7 @@ function MeetingApp() {
       setBookings(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     }, (err) => {
       console.error("Firestore Error:", err);
-      setStatus('error');
+      showToast(`連線異常: ${err.code === 'permission-denied' ? '權限遭拒' : err.message}`, "error");
     });
 
     return () => unsubscribe();
@@ -136,7 +140,7 @@ function MeetingApp() {
 
   const showToast = (msg, type = 'info') => {
     setMessage({ text: msg, type });
-    setTimeout(() => setMessage(null), 3000);
+    setTimeout(() => setMessage(null), 5000); // 增加顯示時間以便閱讀
   };
 
   const weekDays = useMemo(() => {
@@ -161,10 +165,11 @@ function MeetingApp() {
     return map;
   }, [bookings]);
 
+  // 儲存個人資料
   const handleSaveProfile = async (e) => {
     e.preventDefault();
     if (!user) {
-      showToast("系統未就緒，請稍後再試", "error");
+      showToast("系統未就緒，正在嘗試重新連線...", "error");
       return;
     }
     setIsLoading(true);
@@ -172,21 +177,22 @@ function MeetingApp() {
       const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'info');
       await setDoc(profileRef, userProfile);
       setIsProfileModalOpen(false);
-      showToast("個人資料已儲存", "success");
+      showToast("個人資料已儲存成功", "success");
     } catch (err) {
-      console.error(err);
-      showToast("儲存失敗，請檢查網路設定", "error");
+      console.error("Save Profile Error:", err);
+      showToast(`儲存失敗: ${err.code === 'permission-denied' ? '請確認資料庫規則已設為測試模式' : err.message}`, "error");
     } finally {
       setIsLoading(false);
     }
   };
 
+  // 執行預約動作
   const handleBooking = async () => {
     if (!user || !activeSlot) return;
     if (!userProfile.name) {
       setIsBookingModalOpen(false);
       setIsProfileModalOpen(true);
-      showToast("請先完成個人資料設定", "error");
+      showToast("請先設定姓名，否則無法記錄預約者", "error");
       return;
     }
 
@@ -206,22 +212,23 @@ function MeetingApp() {
       });
       setIsBookingModalOpen(false);
       setActiveSlot(null);
-      showToast("會議室預約成功", "success");
+      showToast("會議室預約成功！", "success");
     } catch (err) {
-      console.error(err);
-      showToast("預約失敗，請確認 Firebase Rules 設定", "error");
+      console.error("Booking Error:", err);
+      showToast(`預約失敗: ${err.code === 'permission-denied' ? '資料庫規則禁止寫入，請檢查 Firebase 設定' : err.message}`, "error");
     } finally {
       setIsLoading(false);
     }
   };
 
+  // 刪除預約
   const deleteBooking = async (id) => {
     if (!window.confirm("確定取消預約？")) return;
     try {
       await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'bookings', id));
       showToast("預約已取消", "info");
     } catch (err) {
-      showToast("刪除失敗", "error");
+      showToast(`刪除失敗: ${err.message}`, "error");
     }
   };
 
@@ -231,9 +238,9 @@ function MeetingApp() {
       <div className={`px-4 py-1 text-[10px] font-bold text-center flex justify-center gap-4 transition-colors ${status === 'authorized' ? 'bg-emerald-500 text-white' : 'bg-amber-500 text-white'}`}>
         <span className="flex items-center gap-1 uppercase tracking-tighter">
           {status === 'authorized' ? <Wifi size={10}/> : <WifiOff size={10}/>}
-          連線狀態: {status}
+          連線狀態: {status === 'authorized' ? '已連接後端' : '連線中...'}
         </span>
-        <span className="opacity-75 tracking-tighter">用戶ID: {user?.uid || '未登錄'}</span>
+        <span className="opacity-75 tracking-tighter hidden sm:inline">用戶ID: {user?.uid || '正在取得驗證...'}</span>
       </div>
 
       <header className="bg-white border-b px-6 py-4 flex justify-between items-center sticky top-0 z-20 shadow-sm">
@@ -242,12 +249,12 @@ function MeetingApp() {
             <Building2 size={24} />
           </div>
           <div>
-            <h1 className="font-black text-lg">會議室預約系統</h1>
+            <h1 className="font-black text-lg">企業會議室預約系統</h1>
             <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Enterprise Scheduling System</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={() => setIsProfileModalOpen(true)} className="flex items-center gap-2 bg-slate-100 px-4 py-2 rounded-xl hover:bg-slate-200 transition-all">
+          <button onClick={() => setIsProfileModalOpen(true)} className="flex items-center gap-2 bg-slate-100 px-4 py-2 rounded-xl hover:bg-slate-200 transition-all border border-transparent active:border-indigo-200">
             <UserCircle size={18} />
             <span className="text-xs font-black">{userProfile.name || '設定身分'}</span>
           </button>
@@ -257,7 +264,9 @@ function MeetingApp() {
       <main className="p-4 md:p-8 grid grid-cols-1 lg:grid-cols-4 gap-8 max-w-7xl mx-auto w-full flex-1">
         <aside className="space-y-3">
           <div className="px-2 mb-4">
-            <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest">Select Room / 會議室</h3>
+            <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
+              <Settings size={12} /> 會議室選擇
+            </h3>
           </div>
           {ROOMS.map(room => (
             <button
@@ -280,7 +289,7 @@ function MeetingApp() {
             <div className="flex items-center gap-2 bg-slate-50 p-2 rounded-2xl border">
               <button onClick={() => {const d=new Date(baseDate); d.setDate(d.getDate()-7); setBaseDate(d);}} className="p-2 hover:bg-white hover:shadow-sm rounded-xl transition-all"><ChevronLeft size={20}/></button>
               <div className="px-4 text-center">
-                <div className="text-[10px] font-black text-slate-400 uppercase tracking-tighter">目前週次</div>
+                <div className="text-[10px] font-black text-slate-400 uppercase tracking-tighter">當週起始日期</div>
                 <div className="text-xs font-black">{weekDays[0].date}</div>
               </div>
               <button onClick={() => {const d=new Date(baseDate); d.setDate(d.getDate()+7); setBaseDate(d);}} className="p-2 hover:bg-white hover:shadow-sm rounded-xl transition-all"><ChevronRight size={20}/></button>
@@ -320,7 +329,7 @@ function MeetingApp() {
                             ) : (
                               <button 
                                 onClick={() => {setActiveSlot({date: day.date, time}); setIsBookingModalOpen(true);}} 
-                                className="w-full h-full border-2 border-dashed border-slate-100 rounded-2xl hover:border-indigo-300 hover:bg-indigo-50/30 text-slate-100 hover:text-indigo-400 transition-all font-black"
+                                className="w-full h-full border-2 border-dashed border-slate-100 rounded-2xl hover:border-indigo-300 hover:bg-indigo-50/30 text-slate-100 hover:text-indigo-400 transition-all font-black text-lg"
                               >+</button>
                             )}
                           </td>
@@ -344,18 +353,18 @@ function MeetingApp() {
                 <UserCircle className="text-indigo-600" size={32} />
               </div>
               <h3 className="text-2xl font-black text-slate-800 tracking-tighter">設定您的個人資料</h3>
-              <p className="text-xs text-slate-400 mt-2 font-bold uppercase">Profile Verification</p>
+              <p className="text-xs text-slate-400 mt-2 font-bold uppercase tracking-widest">請先輸入姓名以完成驗證</p>
             </div>
             <form onSubmit={handleSaveProfile} className="space-y-4">
-              <input required placeholder="姓名" className="w-full border-2 border-slate-100 p-4 rounded-2xl outline-none focus:border-indigo-500 font-bold transition-all disabled:opacity-50" value={userProfile.name} onChange={e => setUserProfile({...userProfile, name: e.target.value})} disabled={isLoading} />
+              <input required placeholder="您的姓名" className="w-full border-2 border-slate-100 p-4 rounded-2xl outline-none focus:border-indigo-500 font-bold transition-all disabled:opacity-50" value={userProfile.name} onChange={e => setUserProfile({...userProfile, name: e.target.value})} disabled={isLoading} />
               <input required placeholder="所屬部門" className="w-full border-2 border-slate-100 p-4 rounded-2xl outline-none focus:border-indigo-500 font-bold transition-all disabled:opacity-50" value={userProfile.department} onChange={e => setUserProfile({...userProfile, department: e.target.value})} disabled={isLoading} />
               <button 
                 type="submit"
                 disabled={isLoading}
-                className="w-full bg-indigo-600 text-white p-4 rounded-2xl font-black shadow-lg hover:bg-indigo-700 active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full bg-indigo-600 text-white p-4 rounded-2xl font-black shadow-lg hover:bg-indigo-700 active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
               >
                 {isLoading ? <Loader2 className="animate-spin" size={20} /> : <ShieldCheck size={20} />}
-                {isLoading ? "儲存中..." : "儲存並開始使用"}
+                {isLoading ? "儲存資料中..." : "儲存並開始預約"}
               </button>
             </form>
           </div>
@@ -371,8 +380,8 @@ function MeetingApp() {
             <div className="bg-slate-50 p-6 rounded-3xl mb-6 border border-slate-100">
               <div className="text-indigo-600 font-black text-lg">{selectedRoom.name}</div>
               <div className="flex flex-col gap-1 mt-2 font-bold text-slate-400 text-xs">
-                <span>{activeSlot.date}</span>
-                <span className="text-slate-800 text-lg font-black">{activeSlot.time}</span>
+                <span>日期: {activeSlot.date}</span>
+                <span className="text-slate-800 text-lg font-black">時段: {activeSlot.time}</span>
               </div>
             </div>
             <button 
@@ -381,18 +390,18 @@ function MeetingApp() {
               className="w-full bg-indigo-600 text-white p-4 rounded-2xl font-black shadow-lg hover:bg-indigo-700 transition-all active:scale-95 flex items-center justify-center gap-2 disabled:opacity-50"
             >
               {isLoading && <Loader2 className="animate-spin" size={20} />}
-              {isLoading ? "處理中..." : "確認送出"}
+              {isLoading ? "處理預約中..." : "確認送出"}
             </button>
           </div>
         </div>
       )}
 
-      {/* Toast 提示訊息 */}
+      {/* Toast 提示訊息 (加強錯誤診斷) */}
       {message && (
-        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[60] animate-bounce">
-          <div className={`px-6 py-3 rounded-full shadow-2xl flex items-center gap-3 font-black text-white ${message.type === 'error' ? 'bg-rose-500' : 'bg-emerald-500'}`}>
-            {message.type === 'success' ? <CheckCircle2 size={18} /> : <AlertCircle size={18} />}
-            {message.text}
+        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-[60] animate-bounce w-full max-w-md px-4">
+          <div className={`px-6 py-4 rounded-3xl shadow-2xl flex items-center gap-3 font-black text-white ${message.type === 'error' ? 'bg-rose-500' : 'bg-emerald-500'}`}>
+            {message.type === 'error' ? <AlertCircle size={20} /> : <CheckCircle2 size={20} />}
+            <div className="text-sm leading-tight">{message.text}</div>
           </div>
         </div>
       )}
