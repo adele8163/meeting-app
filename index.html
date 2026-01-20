@@ -1,11 +1,24 @@
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+<!DOCTYPE html>
+<html lang="zh-TW">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>企業會議室預約系統</title>
+    <!-- 載入 Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      /* 確保內容不會超出視窗寬度，防止水平捲動 */
+      body {
+        overflow-x: hidden;
+      }
+    </style>
+  </head>
+  <body class="bg-slate-50 text-slate-900">
+    <!-- React 應用程式的掛載點 -->
+    <div id="root"></div>
 
-// 這是確保 Vercel 能正確編譯 JSX 語法的關鍵設定
-export default defineConfig({
-  plugins: [react()],
-  build: {
-    // 輸出目錄設定為 dist，這是 Vercel 的預設讀取路徑
-    outDir: 'dist',
-  }
-})
+    <!-- 載入核心 React 程式碼 (App.jsx) -->
+    <script type="module" src="/App.jsx"></script>
+  </body>
+</html>
