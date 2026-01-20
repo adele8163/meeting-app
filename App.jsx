@@ -9,11 +9,12 @@ import {
   getDoc,
   deleteDoc,
   onSnapshot,
+  query
 } from 'firebase/firestore';
 import { 
   getAuth, 
   signInAnonymously, 
-  onAuthStateChanged,
+  onAuthStateChanged 
 } from 'firebase/auth';
 import { 
   Building2, 
@@ -24,27 +25,27 @@ import {
   UserCircle,
   AlertCircle,
   X,
-  Clock,
-  Calendar,
-  ShieldCheck
+  ShieldCheck,
+  Wifi,
+  WifiOff
 } from 'lucide-react';
 
-/* <!-- Chosen Palette: Indigo Calm & Professional Slate -->
+/* <!-- Chosen Palette: Professional Indigo & Slate -->
 <!-- Application Structure Plan: 
-1. 資訊架構：採用儀表板佈局，左側為會議室導覽，右側為主動態排程表。
-2. 互動流：使用者進入後先設定個人檔案（Firebase Auth 匿名驗證後存入 Firestore），接著選擇會議室並於週視圖中點擊時段進行預約。
-3. 狀態設計：集中處理 Firebase 連線狀態，針對離線報錯 (Offline Error) 提供 UI 回饋而非崩潰。
-4. 導覽邏輯：支援管理員模式切換，允許跨用戶刪除權限。
+1. 資訊架構：以週視圖排程表為核心，左側提供會議室篩選。
+2. 驗證流：啟動時強制執行 signInAnonymously，並監聽 auth 狀態，確保所有資料請求都在 user 物件存在後發起。
+3. 預約邏輯：使用格式化 ID (RoomID_Date_Time) 確保資料唯一性，並遵守系統指定的公共路徑規則。
+4. 狀態反饋：加入連線狀態看板，解決使用者提到的「無法登錄」感知問題。
 -->
 <!-- Visualization & Content Choices: 
-- 預約狀態 -> 目標：比較時段佔用 -> 方法：響應式 Grid 表格 -> 庫：Tailwind CSS 構建。
-- 連線警示 -> 目標：告知網路狀態 -> 方法：懸浮 Alert 元件 -> 庫：Lucide-react 視覺化。
-- 確認流程 -> 目標：防止誤觸 -> 方法：自定義 React Modal。
+- 預約看板 -> 目標：對比佔用狀態 -> 方法：Grid 排版 -> 庫：Tailwind CSS。
+- 登錄資訊 -> 目標：顯示用戶身分 -> 方法：獨立 Profile Modal。
+- 系統診斷 -> 目標：排除連線問題 -> 方法：狀態列 (Auth Status Bar)。
 -->
 <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
 */
 
-// --- Firebase 配置 (套用您的真實專案資訊) ---
+// --- Firebase 設定 (請確認您的 Firebase Console 已開啟 Anonymous 驗證) ---
 const firebaseConfig = {
   apiKey: "AIzaSyA0nKyCYK6iAVCTpg3qW2Vkqfao8AQspj8",
   authDomain: "meeting-room-system-1a3e9.firebaseapp.com",
@@ -55,12 +56,11 @@ const firebaseConfig = {
   measurementId: "G-9T4XVLVZ0Q"
 };
 
-const firebaseApp = initializeApp(firebaseConfig);
-const auth = getAuth(firebaseApp);
-const db = getFirestore(firebaseApp);
-const appId = 'meeting-room-system-v-final';
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = 'meeting-room-system-final-stable';
 
-// --- 常數定義 ---
 const ROOMS = [
   { id: '301', name: '301 (貴賓室)', hasPC: false },
   { id: '302', name: '302', hasPC: true },
@@ -79,87 +79,74 @@ for (let i = 8; i < 18; i++) {
   TIME_SLOTS.push(`${i.toString().padStart(2, '0')}:30`);
 }
 
-// --- 工具函式 ---
-const formatDate = (date) => {
-  if (!date) return "";
-  const d = (date instanceof Date) ? date : new Date(date);
-  try {
-    return d.toISOString().split('T')[0];
-  } catch (e) {
-    return "";
-  }
-};
-
-const getMonday = (d) => {
-  const date = new Date(d);
-  const day = date.getDay();
-  const diff = date.getDate() - day + (day === 0 ? -6 : 1);
-  return new Date(date.setDate(diff));
-};
-
 function MeetingApp() {
   const [user, setUser] = useState(null);
   const [userProfile, setUserProfile] = useState({ name: '', department: '' });
-  const [view, setView] = useState('user'); 
   const [selectedRoom, setSelectedRoom] = useState(ROOMS[0]);
-  const [baseDate, setBaseDate] = useState(getMonday(new Date()));
+  const [baseDate, setBaseDate] = useState(new Date());
   const [bookings, setBookings] = useState([]);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [isBookingModalOpen, setIsBookingModalOpen] = useState(false);
   const [activeSlot, setActiveSlot] = useState(null);
-  const [connectionStatus, setConnectionStatus] = useState('online'); // online, offline, error
+  const [status, setStatus] = useState('connecting'); // connecting, authorized, error
 
-  // 1. 初始化驗證與網路狀態監聽
+  // 1. 初始化驗證 (RULE 3: Auth Before Queries)
   useEffect(() => {
-    const initAuth = async () => {
+    const initSession = async () => {
       try {
         await signInAnonymously(auth);
-        setConnectionStatus('online');
       } catch (err) {
-        console.error("Firebase Auth 錯誤:", err);
-        setConnectionStatus('error');
+        console.error("Auth Error:", err);
+        setStatus('error');
       }
     };
-    initAuth();
-    const unsubscribe = onAuthStateChanged(auth, setUser);
+    initSession();
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      if (u) setStatus('authorized');
+    });
     return () => unsubscribe();
   }, []);
 
-  // 2. 資料同步 (優化錯誤處理，防止離線報錯崩潰)
+  // 2. 資料獲取 (RULE 1 & 2: Strict Paths & Simple Queries)
   useEffect(() => {
     if (!user) return;
-    
-    // 獲取個人檔案
+
+    // 獲取個人資訊
     const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'info');
     getDoc(profileRef).then(snap => {
-      if (snap.exists()) setUserProfile(snap.data());
-      else setIsProfileModalOpen(true);
-    }).catch(err => {
-      if (err.code === 'unavailable') setConnectionStatus('offline');
+      if (snap.exists()) {
+        setUserProfile(snap.data());
+      } else {
+        setIsProfileModalOpen(true);
+      }
     });
 
-    // 監聽預約資料
+    // 監聽公共預約 (遵守路徑規則)
     const bookingsRef = collection(db, 'artifacts', appId, 'public', 'data', 'bookings');
-    const unsubscribe = onSnapshot(bookingsRef, 
-      (snapshot) => {
-        setBookings(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-        setConnectionStatus('online');
-      }, 
-      (error) => {
-        console.error("Firestore 監聽失敗:", error);
-        if (error.code === 'unavailable') {
-          setConnectionStatus('offline');
-        }
-      }
-    );
+    const unsubscribe = onSnapshot(bookingsRef, (snapshot) => {
+      setBookings(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (err) => {
+      console.error("Firestore Error:", err);
+      setStatus('error');
+    });
+
     return () => unsubscribe();
   }, [user]);
 
   const weekDays = useMemo(() => {
+    const start = new Date(baseDate);
+    const day = start.getDay();
+    const diff = start.getDate() - day + (day === 0 ? -6 : 1);
+    const monday = new Date(start.setDate(diff));
+    
     return [0, 1, 2, 3, 4].map(i => {
-      const d = new Date(baseDate);
-      d.setDate(baseDate.getDate() + i);
-      return { date: formatDate(d), label: ['週一', '週二', '週三', '週四', '週五'][i] };
+      const d = new Date(monday);
+      d.setDate(monday.getDate() + i);
+      return { 
+        date: d.toISOString().split('T')[0], 
+        label: ['週一', '週二', '週三', '週四', '週五'][i] 
+      };
     });
   }, [baseDate]);
 
@@ -169,192 +156,148 @@ function MeetingApp() {
     return map;
   }, [bookings]);
 
-  const handleBooking = async () => {
-    if (!user || !activeSlot || !userProfile.name) return;
-    const bookingId = `${selectedRoom.id}_${activeSlot.date}_${activeSlot.time.replace(':','')}`;
+  const handleSaveProfile = async (e) => {
+    e.preventDefault();
+    if (!user) return;
     try {
-      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'bookings', bookingId), {
-        ...activeSlot,
+      const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'info');
+      await setDoc(profileRef, userProfile);
+      setIsProfileModalOpen(false);
+    } catch (err) {
+      alert("儲存失敗，請檢查網路。");
+    }
+  };
+
+  const handleBooking = async () => {
+    if (!user || !activeSlot) return;
+    const bookingId = `${selectedRoom.id}_${activeSlot.date}_${activeSlot.time.replace(':','')}`;
+    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'bookings', bookingId);
+    
+    try {
+      await setDoc(docRef, {
         roomId: selectedRoom.id,
-        roomName: selectedRoom.name,
-        name: userProfile.name,
-        department: userProfile.department,
-        userId: user.uid,
+        date: activeSlot.date,
         timeSlot: activeSlot.time,
+        userId: user.uid,
+        userName: userProfile.name,
+        userDept: userProfile.department,
         createdAt: new Date().toISOString()
       });
       setIsBookingModalOpen(false);
-    } catch (e) {
-      alert("儲存預約失敗，請檢查網路連線。");
+      setActiveSlot(null);
+    } catch (err) {
+      alert("預約失敗，請確認 Firebase Rules 設定。");
     }
   };
 
   const deleteBooking = async (id) => {
-    if (window.confirm("確定要取消此預約嗎？")) {
-      try {
-        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'bookings', id));
-      } catch (e) {
-        alert("刪除失敗，請稍後再試。");
-      }
+    if (!window.confirm("確定取消預約？")) return;
+    try {
+      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'bookings', id));
+    } catch (err) {
+      alert("刪除失敗。");
     }
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 font-sans flex flex-col text-slate-900">
-      {/* 頁首選單 */}
-      <header className="bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center sticky top-0 z-30 shadow-sm">
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans flex flex-col">
+      {/* 診斷狀態列 */}
+      <div className={`px-4 py-1 text-[10px] font-bold text-center flex justify-center gap-4 transition-colors ${status === 'authorized' ? 'bg-emerald-500 text-white' : 'bg-amber-500 text-white'}`}>
+        <span className="flex items-center gap-1 uppercase tracking-tighter">
+          {status === 'authorized' ? <Wifi size={10}/> : <WifiOff size={10}/>}
+          連線狀態: {status}
+        </span>
+        <span className="opacity-75 tracking-tighter">用戶ID: {user?.uid || '未登錄'}</span>
+      </div>
+
+      <header className="bg-white border-b px-6 py-4 flex justify-between items-center sticky top-0 z-20 shadow-sm">
         <div className="flex items-center gap-3">
-          <div className="bg-indigo-600 p-2 rounded-xl text-white shadow-lg shadow-indigo-100">
+          <div className="bg-indigo-600 p-2 rounded-xl text-white shadow-lg">
             <Building2 size={24} />
           </div>
           <div>
-            <h1 className="font-black text-slate-800 text-lg leading-none">企業會議室預約系統</h1>
-            <div className="flex items-center gap-2 text-[10px] font-bold text-slate-400 mt-1">
-              <Clock size={10} /> {new Date().toLocaleTimeString('zh-TW', { hour12: false })} · 系統正常運作
-            </div>
+            <h1 className="font-black text-lg">會議室預約系統</h1>
+            <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Enterprise Scheduling System</p>
           </div>
         </div>
-        
-        <div className="flex items-center gap-4">
-          {connectionStatus === 'offline' && (
-            <div className="hidden md:flex items-center gap-1.5 text-amber-500 bg-amber-50 px-3 py-1.5 rounded-full border border-amber-100 animate-pulse">
-              <AlertCircle size={14} />
-              <span className="text-[11px] font-bold">目前為離線狀態</span>
-            </div>
-          )}
-          <button 
-            onClick={() => setView(view === 'user' ? 'admin' : 'user')} 
-            className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${
-              view === 'admin' ? 'bg-slate-800 text-white shadow-lg' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            {view === 'admin' ? '管理者模式' : '管理者入口'}
+        <div className="flex items-center gap-2">
+          <button onClick={() => setIsProfileModalOpen(true)} className="flex items-center gap-2 bg-slate-100 px-4 py-2 rounded-xl hover:bg-slate-200 transition-all">
+            <UserCircle size={18} />
+            <span className="text-xs font-black">{userProfile.name || '設定身分'}</span>
           </button>
         </div>
       </header>
 
-      <main className="p-4 md:p-8 grid grid-cols-1 lg:grid-cols-4 gap-8 max-w-[1600px] mx-auto w-full flex-1">
-        {/* 會議室導覽欄 */}
-        <aside className="space-y-4">
-          <div className="bg-white p-6 rounded-[2rem] border border-slate-200 shadow-sm">
-            <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2">
-              <Calendar size={14} /> 會議室清單
-            </h3>
-            <div className="space-y-2.5">
-              {ROOMS.map(room => (
-                <button
-                  key={room.id}
-                  onClick={() => setSelectedRoom(room)}
-                  className={`w-full text-left p-4 rounded-2xl border-2 transition-all group ${
-                    selectedRoom.id === room.id 
-                    ? 'bg-indigo-600 border-indigo-600 text-white shadow-xl shadow-indigo-100 scale-[1.02]' 
-                    : 'bg-white border-transparent hover:border-indigo-100 hover:bg-slate-50'
-                  }`}
-                >
-                  <div className="font-black text-sm">{room.name}</div>
-                  {!room.hasPC && (
-                    <div className={`text-[10px] mt-1 flex items-center gap-1 ${selectedRoom.id === room.id ? 'text-indigo-200' : 'text-slate-400'}`}>
-                      <MonitorOff size={10} /> 無固定電腦
-                    </div>
-                  )}
-                </button>
-              ))}
-            </div>
+      <main className="p-4 md:p-8 grid grid-cols-1 lg:grid-cols-4 gap-8 max-w-7xl mx-auto w-full flex-1">
+        {/* 會議室切換 */}
+        <aside className="space-y-3">
+          <div className="px-2 mb-4">
+            <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest">Select Room / 會議室</h3>
           </div>
-
-          {/* 個人資訊卡片 */}
-          {userProfile.name && (
-            <div className="bg-indigo-50 p-6 rounded-[2rem] border border-indigo-100 flex items-center gap-4">
-              <div className="bg-white p-2 rounded-full text-indigo-600">
-                <UserCircle size={24} />
-              </div>
-              <div>
-                <div className="text-sm font-black text-indigo-900">{userProfile.name}</div>
-                <div className="text-[10px] font-bold text-indigo-400 uppercase">{userProfile.department}</div>
-              </div>
-            </div>
-          )}
+          {ROOMS.map(room => (
+            <button
+              key={room.id}
+              onClick={() => setSelectedRoom(room)}
+              className={`w-full text-left p-4 rounded-2xl border-2 transition-all ${selectedRoom.id === room.id ? 'bg-indigo-600 border-indigo-600 text-white shadow-xl scale-[1.02]' : 'bg-white border-transparent hover:border-indigo-100 shadow-sm'}`}
+            >
+              <div className="font-black text-sm">{room.name}</div>
+              {!room.hasPC && <div className="text-[10px] opacity-70 mt-1 flex items-center gap-1"><MonitorOff size={10}/> 無電腦設備</div>}
+            </button>
+          ))}
         </aside>
 
-        {/* 預約時間主視圖 */}
-        <div className="lg:col-span-3 space-y-6">
-          <div className="bg-white p-6 md:p-8 rounded-[2.5rem] border border-slate-200 shadow-sm flex flex-col md:flex-row justify-between items-center gap-6">
+        {/* 預約表格 */}
+        <div className="lg:col-span-3 space-y-4">
+          <div className="bg-white p-6 rounded-[2rem] border border-slate-200 shadow-sm flex flex-col md:flex-row justify-between items-center gap-4">
             <div>
-              <div className="flex items-center gap-2 mb-1">
-                <span className="bg-indigo-100 text-indigo-600 text-[10px] px-2 py-0.5 rounded-full font-black uppercase tracking-tighter">目前選擇</span>
-                <span className="text-xs text-slate-400 font-bold">| {selectedRoom.id} 室</span>
-              </div>
-              <h2 className="text-3xl font-black text-slate-800">{selectedRoom.name}</h2>
+              <h2 className="text-2xl font-black text-slate-800">{selectedRoom.name}</h2>
+              <p className="text-xs text-slate-400 font-bold mt-1">會議預約看板 / 每週視圖</p>
             </div>
-            
-            <div className="flex items-center gap-3 bg-slate-50 p-2 rounded-[1.5rem] border border-slate-100">
-              <button 
-                onClick={() => {const d=new Date(baseDate); d.setDate(d.getDate()-7); setBaseDate(d);}}
-                className="p-3 hover:bg-white hover:shadow-sm rounded-2xl transition-all text-slate-400 hover:text-indigo-600"
-              >
-                <ChevronLeft size={20}/>
-              </button>
-              <div className="px-4 text-center min-w-[120px]">
-                <div className="text-[10px] font-black text-slate-400 uppercase tracking-tighter">當前預約週</div>
-                <div className="text-sm font-black text-slate-700">{formatDate(baseDate)}</div>
+            <div className="flex items-center gap-2 bg-slate-50 p-2 rounded-2xl border">
+              <button onClick={() => {const d=new Date(baseDate); d.setDate(d.getDate()-7); setBaseDate(d);}} className="p-2 hover:bg-white hover:shadow-sm rounded-xl transition-all"><ChevronLeft size={20}/></button>
+              <div className="px-4 text-center">
+                <div className="text-[10px] font-black text-slate-400 uppercase tracking-tighter">目前週次</div>
+                <div className="text-xs font-black">{weekDays[0].date}</div>
               </div>
-              <button 
-                onClick={() => {const d=new Date(baseDate); d.setDate(d.getDate()+7); setBaseDate(d);}}
-                className="p-3 hover:bg-white hover:shadow-sm rounded-2xl transition-all text-slate-400 hover:text-indigo-600"
-              >
-                <ChevronRight size={20}/>
-              </button>
+              <button onClick={() => {const d=new Date(baseDate); d.setDate(d.getDate()+7); setBaseDate(d);}} className="p-2 hover:bg-white hover:shadow-sm rounded-xl transition-all"><ChevronRight size={20}/></button>
             </div>
           </div>
 
-          <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-xl overflow-hidden">
+          <div className="bg-white rounded-[2rem] border border-slate-200 shadow-xl overflow-hidden">
             <div className="overflow-x-auto">
-              <table className="w-full text-center border-collapse">
+              <table className="w-full text-xs text-center border-collapse">
                 <thead>
                   <tr className="bg-slate-50/50 border-b border-slate-100">
-                    <th className="p-5 text-[10px] font-black text-slate-400 uppercase tracking-widest w-24">時段</th>
+                    <th className="p-4 font-black text-slate-400 w-24">時段</th>
                     {weekDays.map(d => (
-                      <th key={d.date} className="p-5 border-l border-slate-100 min-w-[140px]">
-                        <div className="font-black text-slate-800 text-sm">{d.label}</div>
-                        <div className="text-[10px] text-slate-400 font-bold tracking-tight">{d.date}</div>
+                      <th key={d.date} className="p-4 border-l border-slate-100">
+                        <div className="font-black text-slate-800">{d.label}</div>
+                        <div className="text-[10px] text-slate-400 font-bold">{d.date}</div>
                       </th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {TIME_SLOTS.map(time => (
-                    <tr key={time} className="border-b border-slate-50 transition-colors hover:bg-slate-50/30">
-                      <td className="p-4 text-[10px] font-black text-slate-400 bg-slate-50/10 border-r border-slate-100">{time}</td>
+                    <tr key={time} className="border-b border-slate-50 hover:bg-slate-50/30 transition-colors">
+                      <td className="p-3 font-bold text-slate-400 bg-slate-50/10">{time}</td>
                       {weekDays.map(day => {
                         const b = bookingsMap[`${day.date}_${time}_${selectedRoom.id}`];
                         return (
-                          <td key={day.date} className="p-1.5 h-20 border-l border-slate-50">
+                          <td key={day.date} className="p-1 h-16 border-l border-slate-50">
                             {b ? (
-                              <div className={`h-full w-full rounded-2xl p-3 flex flex-col justify-center relative shadow-sm group transition-all ${
-                                b.userId === user?.uid 
-                                ? 'bg-indigo-600 text-white ring-4 ring-indigo-50' 
-                                : 'bg-slate-100 text-slate-600'
-                              }`}>
-                                <div className="font-black truncate text-xs">{b.name}</div>
-                                <div className={`text-[9px] font-bold opacity-70 truncate uppercase ${b.userId === user?.uid ? 'text-indigo-200' : 'text-slate-400'}`}>
-                                  {b.department}
-                                </div>
-                                {(b.userId === user?.uid || view === 'admin') && (
-                                  <button 
-                                    onClick={() => deleteBooking(b.id)} 
-                                    className="absolute -top-1 -right-1 bg-white text-rose-500 p-1.5 rounded-full shadow-lg opacity-0 group-hover:opacity-100 transition-all scale-75 hover:scale-100"
-                                  >
-                                    <Trash2 size={12}/>
-                                  </button>
+                              <div className={`h-full w-full rounded-2xl p-2 flex flex-col justify-center relative shadow-sm transition-all ${b.userId === user?.uid ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                                <span className="font-black truncate text-[10px] leading-tight">{b.userName}</span>
+                                <span className="text-[9px] opacity-70 truncate">{b.userDept}</span>
+                                {b.userId === user?.uid && (
+                                  <button onClick={() => deleteBooking(b.id)} className="absolute top-1 right-1 hover:text-rose-400 transition-colors"><Trash2 size={10}/></button>
                                 )}
                               </div>
                             ) : (
                               <button 
                                 onClick={() => {setActiveSlot({date: day.date, time}); setIsBookingModalOpen(true);}} 
-                                className="w-full h-full border-2 border-dashed border-slate-100 rounded-2xl hover:border-indigo-400 hover:bg-indigo-50/50 text-slate-100 hover:text-indigo-400 transition-all font-black text-lg"
-                              >
-                                +
-                              </button>
+                                className="w-full h-full border-2 border-dashed border-slate-100 rounded-2xl hover:border-indigo-300 hover:bg-indigo-50/30 text-slate-100 hover:text-indigo-400 transition-all font-black"
+                              >+</button>
                             )}
                           </td>
                         );
@@ -368,83 +311,52 @@ function MeetingApp() {
         </div>
       </main>
 
-      {/* 彈窗：設定個人資料 */}
+      {/* 設定身分 Modal */}
       {isProfileModalOpen && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 z-[100]">
-          <div className="bg-white p-10 rounded-[3rem] w-full max-w-md shadow-2xl">
-            <div className="bg-indigo-50 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6">
-              <UserCircle className="text-indigo-600" size={40} />
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-white p-8 rounded-[2.5rem] w-full max-w-sm shadow-2xl">
+            <div className="text-center mb-6">
+              <div className="bg-indigo-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                <UserCircle className="text-indigo-600" size={32} />
+              </div>
+              <h3 className="text-2xl font-black text-slate-800 tracking-tighter">設定您的個人資料</h3>
+              <p className="text-xs text-slate-400 mt-2 font-bold uppercase">Profile Verification</p>
             </div>
-            <h3 className="text-3xl font-black text-slate-800 text-center mb-2">歡迎使用系統</h3>
-            <p className="text-slate-400 text-center text-sm font-bold mb-8 uppercase tracking-widest">請先設定您的職工資訊</p>
-            <form onSubmit={async (e) => {
-              e.preventDefault();
-              try {
-                await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'info'), userProfile);
-                setIsProfileModalOpen(false);
-              } catch (err) {
-                alert("儲存失敗，請檢查網路。");
-              }
-            }} className="space-y-5">
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-black text-slate-400 ml-4 uppercase">姓名 / Full Name</label>
-                <input required placeholder="輸入您的真實姓名" className="w-full bg-slate-50 border-2 border-slate-100 p-5 rounded-3xl outline-none focus:border-indigo-600 focus:bg-white font-bold transition-all" value={userProfile.name} onChange={e => setUserProfile({...userProfile, name: e.target.value})} />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-black text-slate-400 ml-4 uppercase">部門 / Department</label>
-                <input required placeholder="輸入您所屬的部門" className="w-full bg-slate-50 border-2 border-slate-100 p-5 rounded-3xl outline-none focus:border-indigo-600 focus:bg-white font-bold transition-all" value={userProfile.department} onChange={e => setUserProfile({...userProfile, department: e.target.value})} />
-              </div>
-              <button className="w-full bg-indigo-600 text-white p-5 rounded-3xl font-black shadow-xl shadow-indigo-100 hover:bg-indigo-700 active:scale-[0.98] transition-all flex items-center justify-center gap-2">
-                <ShieldCheck size={20} /> 儲存並開始預約
+            <form onSubmit={handleSaveProfile} className="space-y-4">
+              <input required placeholder="姓名" className="w-full border-2 border-slate-100 p-4 rounded-2xl outline-none focus:border-indigo-500 font-bold transition-all" value={userProfile.name} onChange={e => setUserProfile({...userProfile, name: e.target.value})} />
+              <input required placeholder="所屬部門" className="w-full border-2 border-slate-100 p-4 rounded-2xl outline-none focus:border-indigo-500 font-bold transition-all" value={userProfile.department} onChange={e => setUserProfile({...userProfile, department: e.target.value})} />
+              <button className="w-full bg-indigo-600 text-white p-4 rounded-2xl font-black shadow-lg hover:bg-indigo-700 active:scale-95 transition-all flex items-center justify-center gap-2">
+                <ShieldCheck size={20} /> 儲存並開始使用
               </button>
             </form>
           </div>
         </div>
       )}
 
-      {/* 彈窗：預約確認 */}
+      {/* 預約確認 Modal */}
       {isBookingModalOpen && activeSlot && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 z-[100]">
-          <div className="bg-white p-10 rounded-[3rem] w-full max-w-sm shadow-2xl text-center relative">
-            <button onClick={() => setIsBookingModalOpen(false)} className="absolute top-8 right-8 text-slate-300 hover:text-slate-500 transition-colors">
-              <X size={24}/>
-            </button>
-            <h3 className="font-black text-2xl text-slate-800 mb-6">確認會議預約</h3>
-            <div className="bg-slate-50 p-8 rounded-[2.5rem] mb-8 border border-slate-100">
-              <div className="text-indigo-600 font-black text-2xl mb-2">{selectedRoom.name}</div>
-              <div className="flex flex-col gap-1">
-                <span className="text-slate-400 font-bold text-sm tracking-tight">{activeSlot.date}</span>
-                <span className="text-slate-800 font-black text-xl">{activeSlot.time}</span>
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-white p-8 rounded-[2.5rem] w-full max-w-xs shadow-2xl text-center relative">
+            <button onClick={() => setIsBookingModalOpen(false)} className="absolute top-6 right-6 text-slate-300 hover:text-slate-500 transition-colors"><X size={20}/></button>
+            <h3 className="font-black text-xl text-slate-800 mb-4 tracking-tighter">確認預約會議</h3>
+            <div className="bg-slate-50 p-6 rounded-3xl mb-6 border border-slate-100">
+              <div className="text-indigo-600 font-black text-lg">{selectedRoom.name}</div>
+              <div className="flex flex-col gap-1 mt-2 font-bold text-slate-400 text-xs">
+                <span>{activeSlot.date}</span>
+                <span className="text-slate-800 text-lg font-black">{activeSlot.time}</span>
               </div>
             </div>
             <button 
               onClick={handleBooking} 
-              className="w-full bg-indigo-600 text-white p-5 rounded-3xl font-black shadow-xl shadow-indigo-100 hover:bg-indigo-700 active:scale-[0.98] transition-all"
-            >
-              確定送出預約
-            </button>
-            <button 
-              onClick={() => setIsBookingModalOpen(false)} 
-              className="w-full mt-4 text-slate-400 font-bold text-sm"
-            >
-              再考慮一下
-            </button>
+              className="w-full bg-indigo-600 text-white p-4 rounded-2xl font-black shadow-lg hover:bg-indigo-700 transition-all active:scale-95"
+            >確認送出</button>
           </div>
-        </div>
-      )}
-
-      {/* 底部全域通知 */}
-      {connectionStatus === 'offline' && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-amber-500 text-white px-6 py-4 rounded-3xl shadow-2xl flex items-center gap-3 animate-bounce z-50">
-          <AlertCircle size={20} />
-          <div className="text-sm font-black text-center leading-tight">偵測到網路不穩定：系統目前處於離線快取模式</div>
         </div>
       )}
     </div>
   );
 }
 
-// 嚴謹掛載：解決 TypeError: Cannot read properties of undefined (reading 'S')
 const rootElement = document.getElementById('root');
 if (rootElement) {
   const root = createRoot(rootElement);
